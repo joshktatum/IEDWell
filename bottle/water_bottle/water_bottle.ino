@@ -1,6 +1,6 @@
 /* Smart Water Bottle
  * Developed for WELL for IED project
- * 
+ *
  * Last Updated 11/2/2018
  */
 
@@ -48,7 +48,7 @@ const int APins[] = {A0, A1}; // Analog Input Pin Locations
 
 
 // Internal Timers for sampling and PWM
-#define ClockSpeed0
+#define ClockSpeed0 1
 volatile unsigned long timer0 = 0;
 const int Sample_Rate = 125;        // Samples all data x times per second (Hz)
 
