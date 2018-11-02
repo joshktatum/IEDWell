@@ -1,14 +1,7 @@
-/* Thermocouple Data Acquisition
- * for use with K type Thermocouple wires
- * and AD8495 Breakout boards
- *
- * Reads Temperatures from any number of Thermocouples
- * Reads an LED Voltage & Current and a Fan Current
- * Takes a specified number of samples per second and averages them
- *
- * Creates a new Comma Separated Variable file on an SD card (SD arduino shield)
- * Stores the averaged data to the CSV file every second and prints it to Serial
- *
+/* Smart Water Bottle
+ * Developed for WELL for IED project
+ * 
+ * Last Updated 11/2/2018
  */
 
 
@@ -43,7 +36,7 @@ void error(const char *str);
 #define aref_voltage 5
 
 // Analog Input and DAC pins
-const int APins[] = {A0}; // Analog Input Pin Locations
+const int APins[] = {A0, A1}; // Analog Input Pin Locations
 #define PWM_Pin 8         // There is a PWM signal attached to this pin
 
 
@@ -85,7 +78,7 @@ void setup(){
     while (!Serial.available());
   #endif //WAIT_TO_START
 
-  
+
 
   timer0 = 0; // reset timer0
 }
@@ -125,11 +118,6 @@ void Port_Init(void){
   for(char i = 0; i < num_thermocouples; i++) {
     pinMode(APins[i], INPUT);
   }
-  pinMode(LED_V_Pin, INPUT);   // LED Voltage
-  pinMode(LED_A_Pin, INPUT);   // LED Current
-  pinMode(Fan_A_Pin, INPUT);   // Fan Current
-  pinMode(Vref_Pin, INPUT);    // Voltage Reference for LED_A
-  pinMode(PWM_Pin, OUTPUT);    // PWM for LED
   // use debugging LEDs
   pinMode(redLEDpin, OUTPUT);
   pinMode(greenLEDpin, OUTPUT);
