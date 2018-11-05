@@ -1,43 +1,44 @@
 /* Smart Water Bottle
- * Developed for WELL for IED project
+ * Developed for WELL IED project
  *
- * Last Updated 11/2/2018
+ * For use on an Adafruit Metro M0 Express
+ * with BlueFruit LE Shield, MMA8451 Accelerometer,
+ * and MILONE TECHNOLOGIES 8" eTape
+ *
+ * Last Updated 11/5/2018
  */
 
 
 //------------------------------------------------------------------------------
 // Include Libraries
 //------------------------------------------------------------------------------
-#include <SD.h>
 #include <Wire.h>
-#include "RTClib.h"
+#include <Adafruit_MMA8451.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_NeoPixel.h>
 
 
 //------------------------------------------------------------------------------
 // Function Prototypes
 //------------------------------------------------------------------------------
 void Port_Init(void);
-void TCC_Init(void);
-ISR(TIMER0_COMPA_vect);
-ISR(TIMER1_COMPA_vect);
 
-float Analog_Read(int Pin);
+void Accelerometer_Read(void);
+float Hydrostatic_Read(int Pin);
 void error(const char *str);
+
 
 // -----------------------------------------------------------------------------
 // Global Variables and Constants
 // -----------------------------------------------------------------------------
 // These can be changed at startup as needed
+#define ECHO_TO_BLUETOOTH       0   // echo data to bluetooth out
 #define ECHO_TO_SERIAL          1   // echo data to serial port
-#define WAIT_TO_START           0   // Wait for serial input in setup()
-#define PULSE_WIDTH_MODULATION  1   // Pulse Width Modulates the LED driver, see Duty_Cycle below
+#define WAIT_TO_START           1   // Wait for serial input in setup()
 
-// If you want to set the aref to something other than 5v
-#define aref_voltage 5
 
 // Analog Input and DAC pins
-const int APins[] = {A0, A1}; // Analog Input Pin Locations
-#define PWM_Pin 8         // There is a PWM signal attached to this pin
+const int HydroPin = A0; // Analog Input Pin Location
 
 
 // the digital pins that connect to the LEDs
@@ -45,42 +46,57 @@ const int APins[] = {A0, A1}; // Analog Input Pin Locations
 #define greenLEDpin 3
 // for the data logging shield, we use digital pin 10 for the SD cs line
 #define chipSelect 10
+#define NeoPin 40
+// 1 NeoPixel built in on Pin 40
+Adafruit_NeoPixel pixel = Adafruit_NeoPixel(1, NeoPin, NEO_GRB + NEO_KHZ800);
 
 
-// Internal Timers for sampling and PWM
-#define ClockSpeed0 1
-volatile unsigned long timer0 = 0;
-const int Sample_Rate = 125;        // Samples all data x times per second (Hz)
+// Accelerometer
+Adafruit_MMA8451 mma = Adafruit_MMA8451();
+sensors_event_t event;
 
 
-#define ClockSpeed1 1
-volatile unsigned char timer1 = 0;
-unsigned char Duty_Cycle = 50;      // Percent of the PWM wave that outputs high
-
-// storage variables
-
+// Hydrostatic Resistor
+// Analog Reference Voltage
+#define aref_voltage 5.0
+// Series Resistor Value
+#define SeriesResistor 560
+double Vin = 0.0;
 
 
 // -----------------------------------------------------------------------------
 // Setup
 // -----------------------------------------------------------------------------
-void setup(){
+void setup() {
   Port_Init();
-  TCC_Init();
   Serial.begin(9600);
 
-  #if !PULSE_WIDTH_MODULATION
-    Duty_Cycle = 100;
-  #endif
+
+  pixel.begin();
+  pixel.show(); // Initialize all pixels to 'off'
+
 
   #if WAIT_TO_START
-    Serial.println("Type any character to start");
-    while (!Serial.available());
+    pixel.setPixelColor(0, pixel.Color(255,0,0) ); // Red
+    pixel.show();
+    Serial.println("Type any character to start:");
+    while ( !Serial.available() );
   #endif //WAIT_TO_START
+  pixel.setPixelColor(0, pixel.Color(0,0,255) ); // Blue
+  pixel.show();
 
 
+  if (! mma.begin()) {
+    Serial.println("No MMA8451 found. Couldnt start.");
+    while (1);
+  }
 
-  timer0 = 0; // reset timer0
+  Serial.println("MMA8451 found:");
+  mma.setRange(MMA8451_RANGE_2_G);
+  Serial.print("Range = ");
+  Serial.print(2 << mma.getRange());
+  Serial.println("G");
+
 }
 
 
@@ -88,36 +104,36 @@ void setup(){
 // Loop
 // -----------------------------------------------------------------------------
 void loop(){
-  // Reset all floats
-  for(char i = 0; i < num_thermocouples; i++) {
-    Thermocouple_T[i] = 0.0;
-  }
 
-  // Every 1/Sample_Rate Sample Data
-  for(char n = 1; n <= Sample_Rate; n++){
-
-    if(n < Sample_Rate){    // skips the last delay
-      while(timer0 < ((ClockSpeed0 / Sample_Rate) * n));   // Delay for 1/Sample_Rate
-    }
-  }
+  Accelerometer_Read();
+  Hydrostatic_Read();
 
 
+  #if ECHO_TO_SERIAL
+    /* Display the results (acceleration is measured in m/s^2) */
+    Serial.print("Acceleration:\t");
+    Serial.print("X: \t"); Serial.print(event.acceleration.x); Serial.print("\t");
+    Serial.print("Y: \t"); Serial.print(event.acceleration.y); Serial.print("\t");
+    Serial.print("Z: \t"); Serial.print(event.acceleration.z); Serial.print("\t");
+    Serial.println("m/s^2");
+    /* Display the results (Hydrostatic pressure is measured in Volts) */
+    Serial.print("Hydrostatic Pressure:\t"); Serial.print(Vin);
+    Serial.println("\tV");
+
+    Serial.println();
+  #endif // ECHO_TO_SERIAL
 
 
-
-  while(timer0 < ClockSpeed0);  // Finish out the 1 second delay
-  timer0 = 0;           // reset timer0
+  delay(500);
 }
 
 
 //-----------------------------------------------------------------------------
 // Initialization Definitions
 //-----------------------------------------------------------------------------
-void Port_Init(void){
+void Port_Init(void) {
   // Analog Inputs
-  for(char i = 0; i < num_thermocouples; i++) {
-    pinMode(APins[i], INPUT);
-  }
+  pinMode(HydroPin, INPUT);
   // use debugging LEDs
   pinMode(redLEDpin, OUTPUT);
   pinMode(greenLEDpin, OUTPUT);
@@ -125,65 +141,29 @@ void Port_Init(void){
 }
 
 
-void TCC_Init(void){
-  cli();  //stop interrupts
-
-  //set timer0 interrupt
-  TCCR0A = 0; // set entire TCCR0A register to 0
-  TCCR0B = 0; // same for TCCR0B
-  TCNT0  = 0; //initialize counter value to 0
-  // set compare match register for 2khz increments
-  OCR0A = (250000 / ClockSpeed0); // (16000000 / (ClockSpeed0 * 64)) - 1 (must be <256)
-  TCCR0A |= (1 << WGM01); // turn on CTC mode
-  TCCR0B |= (1 << CS01) | (1 << CS00);  // Set CS01 and CS00 bits for 64 prescaler
-  TIMSK0 |= (1 << OCIE0A);  // enable timer compare interrupt
-
-  //set timer1 interrupt
-  TCCR1A = 0;// set entire TCCR1A register to 0
-  TCCR1B = 0;// same for TCCR1B
-  TCNT1  = 0;//initialize counter value to 0
-  // set compare match register for 1hz increments
-  OCR1A = (250000 / ClockSpeed1); // (16000000 / (ClockSpeed1 * 64)) - 1 (must be <65536)
-  TCCR1B |= (1 << WGM12); // turn on CTC mode
-  TCCR1B |= (1 << CS11) | (1 << CS10);  // Set CS11 and CS10 bits for 64 prescaler
-  TIMSK1 |= (1 << OCIE1A);  // enable timer compare interrupt
-
-  sei();  //allow interrupts
-}
-
-
-ISR(TIMER0_COMPA_vect){   //timer0 interrupts every 2kHz
-  timer0++;
-}
-
-
-ISR(TIMER1_COMPA_vect){   //timer1 interrupts every 50kHz
-  timer1++;
-  if (timer1 >= Duty_Cycle){
-    digitalWrite(PWM_Pin,LOW);   // PWM low
-  }
-  if (timer1 >= 100){
-    digitalWrite(PWM_Pin,HIGH);  // PWM high
-    timer1 = 0;   // reset counter
-  }
-}
-
-
 //-----------------------------------------------------------------------------
 // Function Definitions
 //-----------------------------------------------------------------------------
-float Analog_Read(int Pin){
-  float temp;
-  int raw = analogRead(Pin);     // read the input pin
-  float Vout = raw * (aref_voltage / 1023.0);
-  return Vout;
+void Accelerometer_Read(void) {
+  /* Read the 'raw' data in 14-bit counts */
+  mma.read();
+  /* Get a new sensor event */
+  mma.getEvent(&event);
 }
 
 
-void error(const char *str){
+void Hydrostatic_Read(void) {
+  int raw = analogRead(HydroPin);     // read the input pin
+  Vin = raw * (aref_voltage / 1023.0);
+}
+
+
+void error(const char *str) {
   Serial.print("error: ");
   Serial.println(str);
   // red LED indicates error
   digitalWrite(redLEDpin, HIGH);
+  pixel.setPixelColor(0, pixel.Color(255,0,0) );  // Red
+  pixel.show();
   while(1);   // If an error is found, the code pauses.
 }
