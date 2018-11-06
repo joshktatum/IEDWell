@@ -5,7 +5,7 @@
  * with BlueFruit LE Shield, MMA8451 Accelerometer,
  * and MILONE TECHNOLOGIES 8" eTape
  *
- * Last Updated 11/5/2018
+ * Last Updated 11/6/2018
  */
 
 
@@ -20,6 +20,11 @@
 #include <Adafruit_MMA8451.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_NeoPixel.h>
+
+
+#if SOFTWARE_SERIAL_AVAILABLE
+  #include <SoftwareSerial.h>
+#endif
 
 
 //------------------------------------------------------------------------------
@@ -42,7 +47,11 @@ void error(const __FlashStringHelper* str);
 #define WAIT_TO_START           1   // Wait for serial input in setup()
 
 
-#define FACTORYRESET_ENABLE     1   // Factory resets values the Bluetooth Shield
+// Analog Reference Voltage
+#define aref_voltage            5.0
+
+
+#define FACTORYRESET_ENABLE     0   // Factory resets values the Bluetooth Shield
 /* ...hardware SPI, using SCK/MOSI/MISO hardware SPI pins and then user selected CS/IRQ/RST */
 Adafruit_BluefruitLE_SPI ble(BLUEFRUIT_SPI_CS, BLUEFRUIT_SPI_IRQ, BLUEFRUIT_SPI_RST);
 
@@ -62,11 +71,10 @@ sensors_event_t event;
 // Hydrostatic Resistor
 // Analog Input and DAC pins
 const int HydroPin =            A0;   // Analog Input Pin Location
-// Analog Reference Voltage
-#define aref_voltage            5.0
 // Series Resistor Value
 #define SeriesResistor          560
-double Vin =                    0.0;
+unsigned int raw =              0;
+double RHydro =                 0.0;
 
 
 // -----------------------------------------------------------------------------
@@ -81,24 +89,15 @@ void setup() {
 
 
   pixel.begin();
+  pixel.setPixelColor(0, pixel.Color(0,255,0) ); // Green
   pixel.show(); // Initialize all pixels to 'off'
-
-
-  #if WAIT_TO_START
-    pixel.setPixelColor(0, pixel.Color(255,0,0) ); // Red
-    pixel.show();
-    Serial.println("Type any character to start:");
-    while ( !Serial.available() );
-  #endif //WAIT_TO_START
-  pixel.setPixelColor(0, pixel.Color(0,0,255) ); // Blue
-  pixel.show();
 
 
   /* Initialise the module */
   Serial.print(F("Initialising the Bluefruit LE module: "));
 
   if ( !ble.begin(VERBOSE_MODE) ) {
-    error("Couldn't find Bluefruit, make sure it's in CoMmanD mode & check wiring?");
+    error(F("Couldn't find Bluefruit, make sure it's in CoMmanD mode & check wiring?"));
   }
   Serial.println( F("OK!") );
 
@@ -106,7 +105,7 @@ void setup() {
     /* Perform a factory reset to make sure everything is in a known state */
     Serial.println(F("Performing a factory reset: "));
     if ( ! ble.factoryReset() ){
-      error("Couldn't factory reset");
+      error(F("Couldn't factory reset"));
     }
   }
   /* Disable command echo from Bluefruit */
@@ -116,6 +115,16 @@ void setup() {
   /* Print Bluefruit information */
   ble.info();
 
+  // this line is particularly required for Flora, but is a good idea
+  // anyways for the super long lines ahead!
+  // ble.setInterCharWriteDelay(5); // 5 ms
+
+  /* Change the device name to make it easier to find */
+  Serial.println(F("Setting device name to 'Bluefruit Well': "));
+
+  if (! ble.sendCommandCheckOK(F("AT+GAPDEVNAME=Bluefruit Well")) ) {
+    error(F("Could not set device name?"));
+  }
 
   if (! mma.begin()) {
     Serial.println("No MMA8451 found. Couldnt start.");
@@ -126,6 +135,16 @@ void setup() {
   Serial.print("Range = ");
   Serial.print(2 << mma.getRange());
   Serial.println("G");
+
+
+  #if WAIT_TO_START
+    pixel.setPixelColor(0, pixel.Color(255,0,0) ); // Red
+    pixel.show();
+    Serial.println("Type any character to start:");
+    while ( !Serial.available() );
+  #endif //WAIT_TO_START
+  pixel.setPixelColor(0, pixel.Color(0,0,255) ); // Blue
+  pixel.show();
 
 }
 
@@ -140,18 +159,14 @@ void loop(){
 
 
   #if ECHO_TO_BLUETOOTH
-    // // Display command prompt
-    // Serial.print(F("AT > "));
-    //
-    // // Check for user input and echo it back if anything was found
-    // char command[BUFSIZE+1];
-    // getUserInput(command, BUFSIZE);
-    //
+    /* Command is sent when \n (\r) or println is called */
     // // Send command
     // ble.println(command);
-    //
-    // // Check response status
-    // ble.waitForOK();
+
+    /* Check if command executed OK */
+   // if ( !ble.waitForOK() ) {
+   //   Serial.println(F("Failed to get response!"));
+   // }
   #endif
 
 
@@ -163,13 +178,14 @@ void loop(){
     Serial.print("Z: \t"); Serial.print(event.acceleration.z); Serial.print("\t");
     Serial.println("m/s^2");
     /* Display the results (Hydrostatic pressure is measured in Volts) */
-    Serial.print("Hydrostatic Pressure:\t"); Serial.print(Vin);
-    Serial.println("\tV");
+    Serial.print("Hydrostatic Pressure:\t"); Serial.print(RHydro);
+    Serial.println("\tOhms");
 
     Serial.println();
   #endif // ECHO_TO_SERIAL
 
 
+  /* Delay before next measurement update */
   delay(500);
 }
 
@@ -199,8 +215,10 @@ void Accelerometer_Read(void) {
 
 
 void Hydrostatic_Read(void) {
-  int raw = analogRead(HydroPin);     // read the input pin
-  Vin = raw * (aref_voltage / 1023.0);
+  /* Analog Read the 'raw' data in 10-bit counts */
+  raw = analogRead(HydroPin);
+  /* Convert the 'raw' data to Resistance */
+  RHydro = (raw * SeriesResistor) / (1023.0 - raw);
 }
 
 
@@ -215,7 +233,7 @@ void getUserInput(char buffer[], uint8_t maxSize) {
 }
 
 
-void error(const char *str) {
+void error(const __FlashStringHelper* str) {
   Serial.print("error: ");
   Serial.println(str);
   // red LED indicates error
