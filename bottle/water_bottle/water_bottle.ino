@@ -13,6 +13,10 @@
 // Include Libraries
 //------------------------------------------------------------------------------
 #include <Wire.h>
+#include <SPI.h>
+#include <Adafruit_BLE.h>
+#include <Adafruit_BluefruitLE_SPI.h>
+#include "BluefruitConfig.h"
 #include <Adafruit_MMA8451.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_NeoPixel.h>
@@ -24,8 +28,9 @@
 void Port_Init(void);
 
 void Accelerometer_Read(void);
-float Hydrostatic_Read(int Pin);
-void error(const char *str);
+void Hydrostatic_Read(void);
+void getUserInput(char buffer[], uint8_t maxSize);
+void error(const __FlashStringHelper* str);
 
 
 // -----------------------------------------------------------------------------
@@ -37,37 +42,40 @@ void error(const char *str);
 #define WAIT_TO_START           1   // Wait for serial input in setup()
 
 
-// Analog Input and DAC pins
-const int HydroPin = A0; // Analog Input Pin Location
+#define FACTORYRESET_ENABLE     1   // Factory resets values the Bluetooth Shield
+/* ...hardware SPI, using SCK/MOSI/MISO hardware SPI pins and then user selected CS/IRQ/RST */
+Adafruit_BluefruitLE_SPI ble(BLUEFRUIT_SPI_CS, BLUEFRUIT_SPI_IRQ, BLUEFRUIT_SPI_RST);
 
 
-// the digital pins that connect to the LEDs
-#define redLEDpin 2
-#define greenLEDpin 3
-// for the data logging shield, we use digital pin 10 for the SD cs line
-#define chipSelect 10
-#define NeoPin 40
 // 1 NeoPixel built in on Pin 40
-Adafruit_NeoPixel pixel = Adafruit_NeoPixel(1, NeoPin, NEO_GRB + NEO_KHZ800);
+#define NeoPin                  40
+Adafruit_NeoPixel pixel =       Adafruit_NeoPixel(1, NeoPin, NEO_GRB + NEO_KHZ800);
+#define greenLEDpin             3
+#define redLEDpin               2
 
 
 // Accelerometer
-Adafruit_MMA8451 mma = Adafruit_MMA8451();
+Adafruit_MMA8451 mma =          Adafruit_MMA8451();
 sensors_event_t event;
 
 
 // Hydrostatic Resistor
+// Analog Input and DAC pins
+const int HydroPin =            A0;   // Analog Input Pin Location
 // Analog Reference Voltage
-#define aref_voltage 5.0
+#define aref_voltage            5.0
 // Series Resistor Value
-#define SeriesResistor 560
-double Vin = 0.0;
+#define SeriesResistor          560
+double Vin =                    0.0;
 
 
 // -----------------------------------------------------------------------------
 // Setup
 // -----------------------------------------------------------------------------
 void setup() {
+  while(!Serial);
+  delay(500);
+
   Port_Init();
   Serial.begin(9600);
 
@@ -86,11 +94,33 @@ void setup() {
   pixel.show();
 
 
+  /* Initialise the module */
+  Serial.print(F("Initialising the Bluefruit LE module: "));
+
+  if ( !ble.begin(VERBOSE_MODE) ) {
+    error("Couldn't find Bluefruit, make sure it's in CoMmanD mode & check wiring?");
+  }
+  Serial.println( F("OK!") );
+
+  if ( FACTORYRESET_ENABLE ) {
+    /* Perform a factory reset to make sure everything is in a known state */
+    Serial.println(F("Performing a factory reset: "));
+    if ( ! ble.factoryReset() ){
+      error("Couldn't factory reset");
+    }
+  }
+  /* Disable command echo from Bluefruit */
+  ble.echo(false);
+
+  Serial.println("Requesting Bluefruit info:");
+  /* Print Bluefruit information */
+  ble.info();
+
+
   if (! mma.begin()) {
     Serial.println("No MMA8451 found. Couldnt start.");
     while (1);
   }
-
   Serial.println("MMA8451 found:");
   mma.setRange(MMA8451_RANGE_2_G);
   Serial.print("Range = ");
@@ -107,6 +137,22 @@ void loop(){
 
   Accelerometer_Read();
   Hydrostatic_Read();
+
+
+  #if ECHO_TO_BLUETOOTH
+    // // Display command prompt
+    // Serial.print(F("AT > "));
+    //
+    // // Check for user input and echo it back if anything was found
+    // char command[BUFSIZE+1];
+    // getUserInput(command, BUFSIZE);
+    //
+    // // Send command
+    // ble.println(command);
+    //
+    // // Check response status
+    // ble.waitForOK();
+  #endif
 
 
   #if ECHO_TO_SERIAL
@@ -137,7 +183,7 @@ void Port_Init(void) {
   // use debugging LEDs
   pinMode(redLEDpin, OUTPUT);
   pinMode(greenLEDpin, OUTPUT);
-  pinMode(chipSelect, OUTPUT);
+  pinMode(BLUEFRUIT_SPI_CS, OUTPUT);
 }
 
 
@@ -158,6 +204,17 @@ void Hydrostatic_Read(void) {
 }
 
 
+void getUserInput(char buffer[], uint8_t maxSize) {
+  memset(buffer, 0, maxSize);
+  while ( Serial.available() == 0 ) { delay(1); }
+  uint8_t count = 0;
+  do {
+    count += Serial.readBytes(buffer+count, maxSize);
+    delay(2);
+  } while ( (count < maxSize) && !(Serial.available() == 0) );
+}
+
+
 void error(const char *str) {
   Serial.print("error: ");
   Serial.println(str);
@@ -165,5 +222,5 @@ void error(const char *str) {
   digitalWrite(redLEDpin, HIGH);
   pixel.setPixelColor(0, pixel.Color(255,0,0) );  // Red
   pixel.show();
-  while(1);   // If an error is found, the code pauses.
+  while (1);   // If an error is found, the code pauses.
 }
