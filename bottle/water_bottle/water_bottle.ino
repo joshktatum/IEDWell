@@ -5,7 +5,7 @@
  * with BlueFruit LE Shield, MMA8451 Accelerometer,
  * and MILONE TECHNOLOGIES 8" eTape
  *
- * Last Updated 11/6/2018
+ * Last Updated 11/18/2018
  */
 
 
@@ -20,6 +20,7 @@
 #include <Adafruit_MMA8451.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_NeoPixel.h>
+#include <cassert>
 
 
 #if SOFTWARE_SERIAL_AVAILABLE
@@ -32,8 +33,10 @@
 //------------------------------------------------------------------------------
 void Port_Init(void);
 
-void Accelerometer_Read(void);
-void Hydrostatic_Read(void);
+sensors_event_t Accelerometer_Read(void);
+bool Accelerometer_Read(uint8_t num);
+float Hydrostatic_Read(void);
+float Hydrostatic_Read(uint8_t num);
 bool getUserInput(char buffer[], uint8_t maxSize);
 void error(const __FlashStringHelper* str);
 
@@ -101,17 +104,12 @@ Adafruit_NeoPixel pixel =       Adafruit_NeoPixel(1, NeoPin, NEO_GRB + NEO_KHZ80
 
 // Accelerometer
 Adafruit_MMA8451 mma =          Adafruit_MMA8451();
-sensors_event_t event;
-
 
 // Hydrostatic Resistor
 // Analog Input and DAC pins
 const int HydroPin =            A0;   // Analog Input Pin Location
 // Built in Reference Resistor
 #define Rref                    1300
-
-unsigned int raw =              0;
-unsigned int RHydro =           0.0;
 
 
 // -----------------------------------------------------------------------------
@@ -181,6 +179,17 @@ void setup() {
   }
 
 
+  // Clear any previous custom services/characteristics
+  ble.sendCommandCheckOK("AT+GATTCLEAR");
+
+  // Add a battery service (UUID = 0x180F) to the peripheral
+  ble.sendCommandCheckOK("AT+GATTADDSERVICE=UUID=0x180F");
+
+  // Add a battery measurement characteristic (UUID = 0x2A19), notify enabled
+  ble.sendCommandCheckOK("AT+GATTADDCHAR=UUID=0x2A19,PROPERTIES=0x10");
+
+
+
   if (! mma.begin()) {
     Serial.println("No MMA8451 found. Couldnt start.");
     while (1);
@@ -209,40 +218,48 @@ void setup() {
 // -----------------------------------------------------------------------------
 void loop(){
 
-  Accelerometer_Read();
-  Hydrostatic_Read();
+  bool isUpright = Accelerometer_Read(10);
 
+  if ( isUpright ) {
+    float hydro = Hydrostatic_Read(10);
 
-  #if ECHO_TO_BLUETOOTH
-    /* Command is sent when \n (\r) or println is called */
-     // Send command
-     ble.print("AT+BLEUARTTX=");
-     ble.print(RHydro);
-     ble.println(",");
+    #if ECHO_TO_BLUETOOTH
+      /* Command is sent when \n (\r) or println is called */
+      /* NOTE: Missing command generation, currently sending a constant*/
+      ble.sendCommandCheckOK("AT+GATTCHAR=1,1400");
 
-    /* Check if command executed OK */
-    if ( !ble.waitForOK() ) {
-      Serial.println(F("Failed to get response!"));
-    } else {
-      Serial.println(F("Sent response!"));
-    }
-  #endif
+      /* Check if command executed OK */
+      if ( !ble.waitForOK() ) {
+        pixel.setPixelColor(0, pixel.Color(255,0,0) );  // Red
+        pixel.show();
+        Serial.println(F("Failed to get response!"));
+      } else {
+        pixel.setPixelColor(0, pixel.Color(0,0,255) );  // Blue
+        pixel.show();
+        Serial.println(F("Sent response!"));
+      }
+    #endif
 
+  } else {
 
-  #if ECHO_TO_SERIAL
-    /* Display the results (acceleration is measured in m/s^2) */
-    Serial.print("Acceleration:\t");
-    Serial.print("X: \t"); Serial.print(event.acceleration.x); Serial.print("\t");
-    Serial.print("Y: \t"); Serial.print(event.acceleration.y); Serial.print("\t");
-    Serial.print("Z: \t"); Serial.print(event.acceleration.z); Serial.print("\t");
-    Serial.println("m/s^2");
-    /* Display the results (Hydrostatic pressure is measured in Volts) */
-    Serial.print("Hydrostatic Pressure:\t"); Serial.print(RHydro);
-    Serial.println("\tOhms");
+    #if ECHO_TO_BLUETOOTH
+      /* Command is sent when \n (\r) or println is called */
+      /* Currently sending -1 to mean no information available */
+      ble.sendCommandCheckOK("AT+GATTCHAR=1,-1");
 
-    Serial.println();
-  #endif // ECHO_TO_SERIAL
+      /* Check if command executed OK */
+      if ( !ble.waitForOK() ) {
+        pixel.setPixelColor(0, pixel.Color(255,0,0) );  // Red
+        pixel.show();
+        Serial.println(F("Failed to get response!"));
+      } else {
+        pixel.setPixelColor(0, pixel.Color(127,0,127) );  // Purple
+        pixel.show();
+        Serial.println(F("Sent response!"));
+      }
+    #endif
 
+  }
 
   /* Delay before next measurement update */
   delay(500);
@@ -265,31 +282,83 @@ void Port_Init(void) {
 //-----------------------------------------------------------------------------
 // Function Definitions
 //-----------------------------------------------------------------------------
-void Accelerometer_Read(void) {
+/* Reads the Accelerometer once*/
+sensors_event_t Accelerometer_Read(void) {
   /* Read the 'raw' data in 14-bit counts */
   mma.read();
   /* Get a new sensor event */
+  sensors_event_t event;
   mma.getEvent(&event);
 }
 
+/* Reads the accelerometer a number of times */
+/* Averages the acceletrations */
+/* Returns whether the bottle is upright and steady */
+bool Accelerometer_Read(uint8_t num) {
+  /* declare storage variables for the accelerometer data */
+  float x = 0.0; float y = 0.0; float z = 0.0;
+  /* read the accelerometer for num times */
+  for (uint8_t i = 0; i < num; i++){
+    sensors_event_t event = Accelerometer_Read();
+    x += event.acceleration.x;
+    y += event.acceleration.y;
+    z += event.acceleration.z;
+  }
+  /* average the accelerometer reads */
+  x /= num; y /= num; z /= num;
+  /* Calculate the total acceleration */
+  float total = sqrt(pow(x,2) + pow(y,2) + pow(z,2));
 
-void Hydrostatic_Read(void) {
+  #if ECHO_TO_SERIAL
+    /* Display the results on serial (acceleration is measured in m/s^2) */
+    Serial.print("Acceleration:\t");
+    Serial.print("X: \t"); Serial.print(x); Serial.print("\t");
+    Serial.print("Y: \t"); Serial.print(y); Serial.print("\t");
+    Serial.print("Z: \t"); Serial.print(z); Serial.print("\t");
+    Serial.print("Total:\t"); Serial.print(total); Serial.print("\t");
+    Serial.println("m/s^2");
+    Serial.println();
+  #endif // ECHO_TO_SERIAL
+
+  /* Decide whether the water bottle is upright */
+  if (z < 9.0) { return false; }
+  /* Decide whether the bottle is in motion */
+  if ( total > 11.0) { return false; }
+  /* Otherwise, the bottle must be upright and stable */
+  return true;
+}
+
+
+float Hydrostatic_Read(void) {
   /* Analog Read the 'raw' data in 10-bit counts */
-  raw = analogRead(HydroPin);
+  uint16_t raw = analogRead(HydroPin);
   /* Convert the 'raw' data to Resistance */
-  RHydro = (raw * Rref) / (1023 - raw);
+  float RSENSE = (raw * Rref) / (1023.0 - raw);
+  return RSENSE;
+}
+
+float Hydrostatic_Read(uint8_t num) {
+  /* declare storage variable for the Hydrostatic data */
+  float average = 0.0;
+  /* read the hydrostatic Sensor for num times */
+  for (uint8_t i = 0; i < num; i++){
+    average += Hydrostatic_Read();
+  }
+  /* average the hydrostatic reads */
+  average /= num;
+  return average;
 }
 
 
 bool getUserInput(char buffer[], uint8_t maxSize) {
   // timeout in 100 milliseconds
   TimeoutTimer timeout(100);
-  
+
   memset(buffer, 0, maxSize);
   while ( !Serial.available() && !timeout.expired() ) { delay(1); }
-  
+
   if ( timeout.expired() ) { return false; }
-  
+
   uint8_t count = 0;
   do {
     count += Serial.readBytes(buffer+count, maxSize);
