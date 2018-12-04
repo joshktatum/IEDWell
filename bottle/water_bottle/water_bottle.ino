@@ -55,7 +55,8 @@ void error(const __FlashStringHelper* str);
 // Global Variables and Constants
 // -----------------------------------------------------------------------------
 // These can be changed at startup as needed
-#define ECHO_TO_BLUETOOTH       1   // echo data to bluetooth out
+#define ECHO_TO_BLUETOOTH       0   // echo data to bluetooth out
+#define ECHO_TO_UART            1   // echo data to bluetooth UART out
 #define ECHO_TO_SERIAL          1   // echo data to serial port
 #define ECHO_ACCELEROMETER      0   // echos the accelerometer data (m/s) to serial
 #define WAIT_TO_START           0   // Wait for serial input in setup()
@@ -121,7 +122,7 @@ const int HydroPin =            A0;   // Analog Input Pin Location
 // Built in Reference Resistor
 #define Rref                    1300
 
-float hydro;
+float hydro = 512.0;
 /* The service information */
 int32_t WellServiceId;
 int32_t WellMeasureCharId;
@@ -167,6 +168,28 @@ void loop(){
   if ( isUpright ) {
     hydro = Hydrostatic_Read(10);
   }
+
+
+  #if ECHO_TO_UART
+    /* Command is sent when \n (\r) or println is called */
+    /* AT+GATTCHAR=value */
+    ble.print( F("AT+BLEUARTTX=") );
+    ble.print(hydro);
+    ble.println(',');
+
+    /* Check if command executed OK */
+    if ( !ble.waitForOK() ) {
+      pixel.setPixelColor(0, pixel.Color(255,0,0) );  // Red
+      pixel.show();
+      if ( isUpright ) { Serial.println(F("Failed to get response!")); }
+      else { Serial.println(F("Garbage. Turn me upright you bloody fool!")); }
+    } else {
+      pixel.setPixelColor(0, pixel.Color(0,0,255) );  // Blue
+      pixel.show();
+      if ( isUpright ) { Serial.println(F("Sent response!")); }
+      else { Serial.println(F("Sent Old Junk!")); }
+    }
+  #endif
 
   #if ECHO_TO_BLUETOOTH
     /* Command is sent when \n (\r) or println is called */
